@@ -258,6 +258,8 @@
       border-left: 2px solid #c0d8ff;
     }
     .sub-def .def-item { border-left-color: #c0d8ff; }
+    .sub-def-block { margin-left: 1rem; padding-left: 0.8rem; border-left: 2px solid #c0d8ff; margin-top: 0.4rem; }
+    .compound-list { font-size: 0.88rem; color: #555; margin-top: 0.3rem; font-style: italic; }
 
     /* Welcome / empty state */
     .welcome-state {
@@ -372,16 +374,18 @@
     </div>
 
     <div class="cta-banner">
-      <h3>Build Your Norwegian Vocabulary</h3>
-      <p>Flashcards, exercises, pronunciation practice — all built around real Norwegian words from our dictionary.</p>
+      <h3>🇳🇴 Want to actually remember these words?</h3>
+      <p>The <strong>Learn Norwegian</strong> app turns words into flashcards, drills grammar, and builds real fluency — available in Polish, German, Ukrainian, Lithuanian, Spanish, Arabic and English.</p>
+      <p style="font-size:0.9rem;opacity:0.85;margin-bottom:1.2rem;">👇 Tap your store below to download for free:</p>
       <div class="store-links">
-        <a href="https://apps.apple.com/us/app/learn-norwegian-now/id6504736023?platform=iphone">
-          <img src="../../assets/AppleLogo.png" alt="Download on App Store">
+        <a href="https://apps.apple.com/us/app/learn-norwegian-now/id6504736023?platform=iphone" title="Download on the App Store">
+          <img src="../../assets/AppleLogo.png" alt="Download on the App Store" style="height:50px;border-radius:10px;">
         </a>
-        <a href="https://play.google.com/store/apps/details?id=com.piotrcharkot.LearnNorwegianApp">
-          <img src="../../assets/GoogleLogo.png" alt="Get it on Google Play">
+        <a href="https://play.google.com/store/apps/details?id=com.piotrcharkot.LearnNorwegianApp" title="Get it on Google Play">
+          <img src="../../assets/GoogleLogo.png" alt="Get it on Google Play" style="height:50px;border-radius:10px;">
         </a>
       </div>
+      <p style="font-size:0.78rem;opacity:0.7;margin-top:1rem;">Free to download · iOS &amp; Android</p>
     </div>
 
   </div>
@@ -451,64 +455,156 @@
     }
 
     // ── Content rendering helpers ──────────────────────────────────────────────
+
+    // Ordbøkene content fields are arrays of {type_, text} objects OR plain strings
     function renderContent(content) {
       if (!content) return '';
-      if (typeof content === 'string') return content;
+      if (typeof content === 'string') return escHtml(content);
       if (Array.isArray(content)) {
-        return content.map(seg => seg.text || '').join('');
+        return content.map(seg => {
+          if (typeof seg === 'string') return escHtml(seg);
+          // segments have .text field
+          return escHtml(seg.text || seg.lemma || '');
+        }).join('');
       }
       return '';
     }
 
+    // Render inline items referenced by $ placeholders in template strings
+    function renderItemInline(item) {
+      if (!item) return '';
+      switch (item.type_) {
+        case 'usage': return escHtml(item.text || '');
+        case 'article_ref': return escHtml(item.lemmas?.[0]?.lemma || '');
+        case 'entity':
+        case 'language':
+        case 'grammar':
+        case 'relation': return escHtml(item.id || '');
+        default: return escHtml(item.text || '');
+      }
+    }
+
+    // Template strings use $ as placeholders for items array
+    function renderTemplate(content, items = []) {
+      if (!content) return '';
+      const parts = String(content).split('$');
+      let out = '';
+      for (let i = 0; i < parts.length; i++) {
+        out += escHtml(parts[i]);
+        if (items && items[i]) out += renderItemInline(items[i]);
+      }
+      return out.trim();
+    }
+
+    // Render a single element — Ordbøkene uses type_ (with underscore)
     function renderElement(el, depth = 0) {
       if (!el) return '';
-      switch (el.type) {
-        case 'definition_text':
-          return `<span class="def-text">${renderContent(el.content)}</span>`;
+      const type = el.type_ || el.type || '';
+
+      switch (type) {
+        case 'explanation': {
+          // Main definition text — content is a template string, items fill $ slots
+          const text = renderTemplate(el.content, el.items);
+          return text ? `<span class="def-text">${text}</span>` : '';
+        }
         case 'example': {
-          const quote = el.quote ? renderContent(el.quote.content) : '';
-          const expl  = el.explanation ? renderContent(el.explanation.content) : '';
-          let out = '';
-          if (quote) out += `<div class="def-example">${quote}${expl ? ' — ' + expl : ''}</div>`;
-          return out;
+          const quote = el.quote ? renderTemplate(el.quote.content, el.quote.items) : '';
+          const expl  = el.explanation ? renderTemplate(el.explanation.content, el.explanation.items) : '';
+          if (!quote && !expl) return '';
+          return `<div class="def-example">${quote}${expl ? ' — ' + expl : ''}</div>`;
+        }
+        case 'definition': {
+          // Nested definition block
+          let html = '<div class="sub-def-block">';
+          (el.elements || []).forEach(subEl => { html += renderElement(subEl, depth + 1); });
+          html += '</div>';
+          return html;
+        }
+        case 'compound_list': {
+          const intro = renderTemplate(el.intro?.content, el.intro?.items);
+          const words = (el.elements || []).map(c => escHtml(c?.lemmas?.[0]?.lemma || '')).filter(Boolean).join(', ');
+          return `<div class="compound-list">${intro ? intro + ' ' : ''}${words}</div>`;
         }
         case 'sub_article': {
           if (el.article) return renderDefinitions(el.article.body?.definitions || [], depth + 1);
           return '';
         }
+        // Legacy / fallback — definition_text used in older API format
+        case 'definition_text': {
+          const text = renderContent(el.content);
+          return text ? `<span class="def-text">${text}</span>` : '';
+        }
         default:
-          return el.content ? `<span>${renderContent(el.content)}</span>` : '';
+          // Try to render anything with content
+          if (el.content) {
+            const text = typeof el.content === 'string'
+              ? renderTemplate(el.content, el.items)
+              : renderContent(el.content);
+            return text ? `<span class="def-text">${text}</span>` : '';
+          }
+          return '';
       }
     }
 
     function renderDefinitions(definitions, depth = 0) {
       if (!definitions || !definitions.length) return '';
-      let html = `<ul class="def-list${depth > 0 ? ' sub-def' : ''}">`;
+      let html = `<ol class="def-list${depth > 0 ? ' sub-def' : ''}">`;
       definitions.forEach((def, idx) => {
         if (!def) return;
+        const type = def.type_ || def.type || '';
+        if (type !== 'definition' && type !== '') return; // skip non-definition blocks
         html += `<li class="def-item">`;
-        if (depth === 0) html += `<span class="def-number">${idx + 1}.</span>`;
-        // Elements
+        // Elements inside this definition
         const elements = def.elements || [];
         elements.forEach(el => { html += renderElement(el, depth); });
-        // Sub-definitions
-        if (def.sub_definitions && def.sub_definitions.length) {
-          html += renderDefinitions(def.sub_definitions, depth + 1);
-        }
         html += `</li>`;
       });
-      html += '</ul>';
+      html += '</ol>';
       return html;
     }
 
     // ── Inflection table ───────────────────────────────────────────────────────
-    function buildInflectionTable(inflection) {
-      if (!inflection || !inflection.length) return '';
-      // Group by tag signature (first 2 tags often describe the grammatical category)
-      const rows = inflection.map(inf => ({
-        tags: (inf.tags || []).join(', '),
-        word_form: inf.word_form || ''
-      })).filter(r => r.word_form);
+    // Ordbøkene stores inflections in lemmas[0].paradigm_info[].inflection[]
+    // Each inflection entry: { tags: [...], word_form: "..." }
+    function buildInflectionTable(article) {
+      const paradigm_info = article.lemmas?.[0]?.paradigm_info || [];
+      if (!paradigm_info.length) return '';
+
+      // Collect all unique (tags, word_form) pairs across all paradigms
+      const allowedTags = new Set([
+        'Inf','Pres','Past','<PerfPart>','Imp','Inf, Pass',
+        'Sing, Ind','Sing, Def','Plur, Ind','Plur, Def',
+        'Pos, Masc/Fem, Ind, Sing','Pos, Neuter, Ind, Sing',
+        'Pos, Plur','Pos, Def, Sing','Cmp','Sup, Ind','Sup, Def',
+        'Adj, <PresPart>'
+      ]);
+
+      // Build rows: for each paradigm, get inflection rows
+      // Use first paradigm that has inflection data
+      let rows = [];
+      for (const p of paradigm_info) {
+        const inf = p.inflection || [];
+        if (!inf.length) continue;
+        inf.forEach(entry => {
+          const tagStr = (entry.tags || []).join(', ');
+          const wf = entry.word_form || '';
+          if (wf && (allowedTags.has(tagStr) || allowedTags.size === 0)) {
+            rows.push({ tags: tagStr, word_form: wf });
+          }
+        });
+        if (rows.length) break; // use first paradigm with data
+      }
+
+      // Fallback: if nothing matched allowed list, show all rows
+      if (!rows.length) {
+        for (const p of paradigm_info) {
+          (p.inflection || []).forEach(entry => {
+            const wf = entry.word_form || '';
+            if (wf) rows.push({ tags: (entry.tags || []).join(', '), word_form: wf });
+          });
+          if (rows.length) break;
+        }
+      }
 
       if (!rows.length) return '';
 
@@ -542,7 +638,7 @@
       }
 
       // Inflection table
-      const inflectionHtml = buildInflectionTable(article.inflection);
+      const inflectionHtml = buildInflectionTable(article);
 
       // Definitions
       const definitions = article.body?.definitions || [];
